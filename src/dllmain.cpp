@@ -16,6 +16,7 @@
 #include <locale>
 #include <codecvt>
 #include <string>
+#include "UnrealEngine.h"
 #include "PassiveEffect.h"
 #include "FSignal.h"
 
@@ -73,6 +74,8 @@ void __fastcall AddNotification(const wchar_t* text,
 		AddInstantNotification(World, text, particleRef, sound, track, stopPreviousSound, headline2, boss_headline, chat, category, sound2);
 }
 
+//FString* (__fastcall* FName_ToString)(FName*, FString*);
+
 struct UiStateGame;
 uintptr_t(__fastcall* GetUiStateGame)();
 
@@ -125,6 +128,8 @@ void ConfigureFXProfile(int profile_id) {
 #ifndef KR_VERSION
 	bEnablePhantomWeapon = CfgDoc.select_node(phantom_query.c_str()).node().attribute(xorstr_("enable")).as_bool(true);
 #endif
+
+	// Iterate over list of effect emitters to change
 	auto nodes = CfgDoc.select_nodes(video_query.c_str());
 	for (auto node : nodes) {
 		auto nodeName = node.node().attribute(xorstr_("name")).as_string();
@@ -133,6 +138,7 @@ void ConfigureFXProfile(int profile_id) {
 		}
 	}
 
+	// Check first if the function pointer is valid, if valid execute list of console commands
 	if (ExecuteConsoleCommandNoHistory) {
 		auto cmds = CfgDoc.select_nodes(cmds_query.c_str());
 		for (auto cmd : cmds) {
@@ -142,12 +148,54 @@ void ConfigureFXProfile(int profile_id) {
 		}
 	}
 
+	// Initialize our pointer to the FDamageFloater UObject if not initialized
 	if (!pSignalInfo)
 		pSignalInfo = *(FDamageFloater**)SignalInfo_Addr;
 
 	if (pSignalInfo) {
 		pSignalInfo->m_pSignalInfo->Config.DefaultScale = CfgDoc.select_node(font_query.c_str()).node().attribute(xorstr_("scale")).as_float(1.6f);
-		pSignalInfo->m_pSignalInfo->Config.SpaceBetweenWord = CfgDoc.select_node(font_query.c_str()).node().attribute(xorstr_("wordspacing")).as_float(0.0f);;
+		pSignalInfo->m_pSignalInfo->Config.SpaceBetweenWord = CfgDoc.select_node(font_query.c_str()).node().attribute(xorstr_("wordspacing")).as_float(0.0f);
+
+		// These are statically referenced in the engine and represent the order of the entries in the UAsset, shouldn't change but NCSoft likes to do random massive changes for no reason
+		// Note to self: if client crashes happen at start and nothing sticks out of the ordinary then check the structure size of FSignalTypeData, it might of changed...
+		if (pSignalInfo->m_pSignalInfo->SignalTypeList.IsValidIndex(ESHOW_SIGNAL_TYPE::SGT_Hit_Enemy))
+			pSignalInfo->m_pSignalInfo->SignalTypeList[ESHOW_SIGNAL_TYPE::SGT_Hit_Enemy].bDisable = CfgDoc.select_node(font_query.c_str()).node().attribute(xorstr_("sgt_hit_enemy")).as_int(0);
+
+		if (pSignalInfo->m_pSignalInfo->SignalTypeList.IsValidIndex(ESHOW_SIGNAL_TYPE::SGT_CriHit_Enemy))
+			pSignalInfo->m_pSignalInfo->SignalTypeList[ESHOW_SIGNAL_TYPE::SGT_CriHit_Enemy].bDisable = CfgDoc.select_node(font_query.c_str()).node().attribute(xorstr_("sgt_crithit_enemy")).as_int(0);
+
+		if (pSignalInfo->m_pSignalInfo->SignalTypeList.IsValidIndex(ESHOW_SIGNAL_TYPE::SGT_BigHit_Enemy))
+			pSignalInfo->m_pSignalInfo->SignalTypeList[ESHOW_SIGNAL_TYPE::SGT_BigHit_Enemy].bDisable = CfgDoc.select_node(font_query.c_str()).node().attribute(xorstr_("sgt_bighit_enemy")).as_int(0);
+
+		/*
+		// Test code to iterate over list of signal types loaded from UAsset
+		ConsoleWrite(L"Entries: %d\n", pSignalInfo->m_pSignalInfo->SignalTypeList.Num());
+		
+		if (FName_ToString) {
+			for (int i = 0; i < pSignalInfo->m_pSignalInfo->SignalTypeList.Num(); i++)
+			{
+				auto TypeName = FString();
+				FName_ToString(&pSignalInfo->m_pSignalInfo->SignalTypeList[i].Type, &TypeName);
+				ConsoleWrite(L"--------------------------------\n");
+				ConsoleWrite(L"Type: %s\nbSkip Zero: %S\nbAbs: %S\nPosType: %d\nDrawColor: %d %d %d %d\nDrawNumColor: %d %d %d %d\nAnimTypeIndx: %d\nbDisabled: %S\n",
+					TypeName.c_str(),
+					pSignalInfo->m_pSignalInfo->SignalTypeList[i].bSkipZero ? "True" : "False",
+					pSignalInfo->m_pSignalInfo->SignalTypeList[i].bAbs ? "True" : "False",
+					pSignalInfo->m_pSignalInfo->SignalTypeList[i].PosType,
+					pSignalInfo->m_pSignalInfo->SignalTypeList[i].DrawColor.___u0.__s0.R,
+					pSignalInfo->m_pSignalInfo->SignalTypeList[i].DrawColor.___u0.__s0.G,
+					pSignalInfo->m_pSignalInfo->SignalTypeList[i].DrawColor.___u0.__s0.B,
+					pSignalInfo->m_pSignalInfo->SignalTypeList[i].DrawColor.___u0.__s0.A,
+					pSignalInfo->m_pSignalInfo->SignalTypeList[i].DrawNumColor.___u0.__s0.R,
+					pSignalInfo->m_pSignalInfo->SignalTypeList[i].DrawNumColor.___u0.__s0.G,
+					pSignalInfo->m_pSignalInfo->SignalTypeList[i].DrawNumColor.___u0.__s0.B,
+					pSignalInfo->m_pSignalInfo->SignalTypeList[i].DrawNumColor.___u0.__s0.A,
+					pSignalInfo->m_pSignalInfo->SignalTypeList[i].AnimTypeIdx,
+					pSignalInfo->m_pSignalInfo->SignalTypeList[i].bDisable ? "True" : "False"
+				);
+			}
+		}
+		*/
 	}
 }
 
@@ -443,7 +491,7 @@ char __fastcall hkPassiveEffectList_add(uintptr_t* thisptr, unsigned __int64 tar
 		Query the effect record for the specific effectId
 		Returns pointer to effect record or 0 if it does not exist / is cached.
 
-		The function should cache the record if its not already cached...? So the only reason why it should return 0 is that the specific effectId does not exist
+		The function should cache the record if its not already cached...? So the only reason why it should return 0 is that the record does not exist for that effectId
 	*/
 	auto _effectRecord = QueryEffectRecord(effectId);
 
@@ -613,7 +661,6 @@ bool __cdecl init([[maybe_unused]] const Version client_version)
 		else
 			MessageBox(NULL, xorstr_(L"Failed to find UiStateGame::Get()"), xorstr_(L"[ExtendedOptions] Search Error"), MB_OK);
 
-		// (.*?) \+ 848\) == 1\)
 		result = std::search(data.begin(), data.end(), pattern_searcher(xorstr_("45 33 ED 4C 8B 64 24 78 48 8B 8F ?? ?? ?? ?? 4C 8B 7C 24 60")));
 		if (result != data.end()) {
 			memcpy(&PassiveEffectList_Offset, &result[0] + 0xB, 4);
@@ -626,12 +673,21 @@ bool __cdecl init([[maybe_unused]] const Version client_version)
 		else 
 			MessageBox(NULL, xorstr_(L"Failed to find BNSClient::GetWorld"), xorstr_(L"[ExtendedOptions] Search Error"), MB_OK);
 
+		// For TW / KR client and eventually NCW client, UI stuff were changed and compiled entirely different
+		// and this is the only way I can accurately get the offset for the PassiveEffectList for alias dumping purposes
 		result = std::search(data.begin(), data.end(), pattern_searcher(xorstr_("CC 48 8B 81 ?? ?? ?? ?? 48 85 C0 74 07 C6 80 6B EB")));
 		if (result != data.end()) {
 			memcpy(&PassiveEffectList_Offset, &result[0] + 0x4, 4);
 			oAFunction = module->rva_to<std::remove_pointer_t<decltype(oAFunction)>>((uintptr_t)&result[0] + 0x1 - handle);
 			DetourAttach(&(PVOID&)oAFunction, &hkAFunction);
 		}
+
+		// This pattern only works on NCW client and will eventually break because the function becomes inline
+		/*
+		result = std::search(data.begin(), data.end(), pattern_searcher(xorstr_("48 8B DA 83 79 04 00 75 19 E8")));
+		if (result != data.end())
+			FName_ToString = module->rva_to<std::remove_pointer_t<decltype(FName_ToString)>>((uintptr_t)&result[0] - 0xF - handle);
+		*/
 
 		auto key = (CfgDoc.select_node(xorstr_("/config/options/option[@name='reloadKey']")).node().attribute(xorstr_("keyCode")).as_string(xorstr_("39"))); // Default is 6 key
 		ReloadInput.Key = GetKeyCodeFromString(key);

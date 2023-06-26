@@ -159,7 +159,7 @@
       <OptimizeReferences>true</OptimizeReferences>
       <GenerateDebugInformation>false</GenerateDebugInformation>
       <EnableUAC>true</EnableUAC>
-      <AdditionalDependencies>;$(SolutionDir)Dependencies\Detours\lib.X64\detours.lib;ntdll.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>$(SolutionDir)Dependencies\Detours\lib.X64\detours.lib;ntdll.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <ModuleDefinitionFile>$(TargetName)_$(PlatformShortName).def</ModuleDefinitionFile>
       <LinkTimeCodeGeneration>UseLinkTimeCodeGeneration</LinkTimeCodeGeneration>
       <SetChecksum>true</SetChecksum>
@@ -169,6 +169,7 @@
     <ClInclude Include="FEngineControlSet.h" />
     <ClInclude Include="FSignal.h" />
     <ClInclude Include="PassiveEffect.h" />
+    <ClInclude Include="UnrealEngine.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="dllmain.cpp" />
