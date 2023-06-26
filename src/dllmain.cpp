@@ -19,6 +19,8 @@
 #include "PassiveEffect.h"
 #include "FSignal.h"
 
+//#define KR_VERSION 1
+
 std::filesystem::path docPath;
 std::map<std::string, uintptr_t> FXMap;
 pugi::xml_document CfgDoc;
@@ -32,8 +34,13 @@ BInputKey Profile_2;
 BInputKey Profile_3;
 BInputKey Profile_4;
 BInputKey Profile_5;
+bool COMPILER_CHANGED = false;
 
 bool bEnablePhantomWeapon = true;
+
+#define LDR_DLL_NOTIFICATION_REASON_LOADED 1
+#define LDR_DLL_NOTIFICATION_REASON_UNLOADED 0
+typedef NTSTATUS(NTAPI* tLdrRegisterDllNotification)(ULONG, PVOID, PVOID, PVOID);
 
 struct World;
 World* (__fastcall* BNSClient_GetWorld)();
@@ -115,7 +122,9 @@ void ConfigureFXProfile(int profile_id) {
 	std::string phantom_query = xorstr_("/config/profile_") + std::to_string(profile_id) + xorstr_("/phantom");
 	std::string font_query = xorstr_("/config/profile_") + std::to_string(profile_id) + xorstr_("/damage_font");
 
+#ifndef KR_VERSION
 	bEnablePhantomWeapon = CfgDoc.select_node(phantom_query.c_str()).node().attribute(xorstr_("enable")).as_bool(true);
+#endif
 	auto nodes = CfgDoc.select_nodes(video_query.c_str());
 	for (auto node : nodes) {
 		auto nodeName = node.node().attribute(xorstr_("name")).as_string();
@@ -124,11 +133,13 @@ void ConfigureFXProfile(int profile_id) {
 		}
 	}
 
-	auto cmds = CfgDoc.select_nodes(cmds_query.c_str());
-	for (auto cmd : cmds) {
-		std::string mycmd = (cmd.node().attribute(xorstr_("run")).as_string());
-		std::wstring runcmd(mycmd.begin(), mycmd.end());
-		ExecuteConsoleCommandNoHistory(runcmd.c_str());
+	if (ExecuteConsoleCommandNoHistory) {
+		auto cmds = CfgDoc.select_nodes(cmds_query.c_str());
+		for (auto cmd : cmds) {
+			std::string mycmd = (cmd.node().attribute(xorstr_("run")).as_string());
+			std::wstring runcmd(mycmd.begin(), mycmd.end());
+			ExecuteConsoleCommandNoHistory(runcmd.c_str());
+		}
 	}
 
 	if (!pSignalInfo)
@@ -175,7 +186,16 @@ void __fastcall initSystem() {
 	FXMap.insert(std::make_pair(xorstr_("BackMidEmitter"), (uintptr_t)&EffectController->bShow_BackMidEmitter));
 	FXMap.insert(std::make_pair(xorstr_("BackLowEmitter"), (uintptr_t)&EffectController->bShow_BackLowEmitter));
 	FXMap.insert(std::make_pair(xorstr_("BackParticleLight"), (uintptr_t)&EffectController->bShow_BackParticleLight));
+	//ConsoleWrite(L"EffectController: %p\n", EffectController);
 	ConfigureFXProfile(0);
+}
+
+uintptr_t DebuffList = NULL;
+__int64(__fastcall* oAFunction)(__int64 a1);
+__int64 __fastcall hkAFunction(__int64 a1) {
+	if (a1 && a1 > 0x6D240 && a1 != DebuffList)
+		DebuffList = a1;
+	return oAFunction(a1);
 }
 
 bool bInit = false;
@@ -339,6 +359,11 @@ void __fastcall hkBInputKey(BInputKey* thisptr, EInputKeyEvent* InputKeyEvent) {
 				Print_Active_Effects = true;
 				if (GetConsoleWindow()) {
 					auto UiState = GetUiStateGame();
+
+					// KR / TW Change
+					if (DebuffList)
+						UiState = DebuffList;
+
 					if (UiState && PassiveEffectList_Offset) {
 						auto& _effectList = *reinterpret_cast<PassiveEffectList**>(UiState + PassiveEffectList_Offset);
 						ConsoleWrite(xorstr_(L"\n----------------------------\nBuff Bar\n----------------------------\n"));
@@ -459,6 +484,17 @@ void __fastcall hkStartPhantomWeaponMode(uintptr_t* thisptr) {
 	return oStartPhantomWeaponMode(thisptr);
 }
 
+#ifdef KR_VERSION
+void NTAPI DllNotification(ULONG notification_reason, const LDR_DLL_NOTIFICATION_DATA* notification_data, PVOID context)
+{
+	if (notification_reason == LDR_DLL_NOTIFICATION_REASON_LOADED)
+		if (wcsncmp(notification_data->Loaded.BaseDllName->Buffer, L"wlanapi", 7) == 0)
+			initSystem();
+
+	return;
+}
+#endif
+
 bool __cdecl init([[maybe_unused]] const Version client_version)
 {
     NtCurrentPeb()->BeingDebugged = FALSE;
@@ -471,8 +507,10 @@ bool __cdecl init([[maybe_unused]] const Version client_version)
             });
         const auto data = s1->as_bytes();
 
+#ifndef KR_VERSION
 		DetourTransactionBegin();
 		DetourUpdateThread(NtCurrentThread());
+#endif
 
 		pugi::xml_parse_result loadResult = CfgDoc.load_file(docPath.c_str(), pugi::parse_default);
 
@@ -482,55 +520,81 @@ bool __cdecl init([[maybe_unused]] const Version client_version)
 			MessageBox(NULL, xorstr_(L"Failed to load extended_options.xml in Documents\\BnS"), xorstr_(L"Config Not Found"), MB_OK);
 			return true;
 		}
+#ifndef KR_VERSION
 		auto sBinput = std::search(data.begin(), data.end(), pattern_searcher(xorstr_("0F B6 47 18 48 8D 4C 24 30 89 03")));
 		if (sBinput != data.end()) {
 			uintptr_t aBinput = (uintptr_t)&sBinput[0] - 0x38;
 			oBInputKey = module->rva_to<std::remove_pointer_t<decltype(oBInputKey)>>(aBinput - handle);
 			DetourAttach(&(PVOID&)oBInputKey, &hkBInputKey);
 		} else
-			MessageBox(NULL, xorstr_(L"Failed to hook BInput"), xorstr_(L"[ExtendedOptions] Search Error"), MB_OK);
+			MessageBox(NULL, xorstr_(L"Failed to hook BInput"), xorstr_(L"Search Error"), MB_OK);
+#endif
 
+		// NCW Pattern 48 C7 40 C8 FE FF FF FF 48 89 58 08 48 89 68 10 48 89 70 18 48 89 78 20 41 8B E9 41 0F B7 D8 4C 8B F2
 		auto result = std::search(data.begin(), data.end(), pattern_searcher(xorstr_("48 C7 40 C8 FE FF FF FF 48 89 58 08 48 89 68 10 48 89 70 18 48 89 78 20 41 8B E9 41 0F B7 D8 4C 8B F2")));
+		if (result == data.end()) {
+			result = std::search(data.begin(), data.end(), pattern_searcher(xorstr_("48 C7 40 C8 FE FF FF FF 48 89 58 08 48 89 68 10 48 89 70 18 45 8B F1 41 0F BF E8")));
+			COMPILER_CHANGED = true;
+		}
+#ifndef KR_VERSION
 		if (result != data.end()) {
-			oPassiveEffectList_add = module->rva_to<std::remove_pointer_t<decltype(oPassiveEffectList_add)>>((uintptr_t)&result[0] - 0xD - handle);
-			DataManager_Instance = (uintptr_t*)GetAddress((uintptr_t)&result[0] + 0x44, 3, 7); // 48 8B 05 90 F7 4B 03
-			memcpy(&DataManager_EffectRecord, &result[0] + 0x4E, 4);
-			//DataManager_Instance_Offset = memcpy(&walkBackOffset, &spfnc_gs[0] + 0x21, 4);
+			oPassiveEffectList_add = module->rva_to<std::remove_pointer_t<decltype(oPassiveEffectList_add)>>((uintptr_t)&result[0] - (COMPILER_CHANGED ? 0xC : 0xD) - handle);
+			DataManager_Instance = (uintptr_t*)GetAddress((uintptr_t)&result[0] + (COMPILER_CHANGED ? 0x35 : 0x44), 3, 7); // 48 8B 05 90 F7 4B 03
+			memcpy(&DataManager_EffectRecord, &result[0] + (COMPILER_CHANGED ? 0x3F : 0x4E), 4);
 
 			DetourAttach(&(PVOID&)oPassiveEffectList_add, &hkPassiveEffectList_add);
 		} else 
-			MessageBox(NULL, xorstr_(L"Failed to hook PassiveEffect_add"), xorstr_(L"[ExtendedOptions] Search Error"), MB_OK);
+			MessageBox(NULL, xorstr_(L"Failed to hook PassiveEffect_add"), xorstr_(L"Search Error"), MB_OK);
+#endif
 
 		auto sControlSet = std::search(data.begin(), data.end(), pattern_searcher(xorstr_("F3 41 0F 10 08 0F 57 C0 0F 2F C8 72 0B 0F 28 C1")));
 		if (sControlSet != data.end()) {
 			oSystemFunc_SetOutFrustumParticleSpawnRate = module->rva_to<std::remove_pointer_t<decltype(oSystemFunc_SetOutFrustumParticleSpawnRate)>>((uintptr_t)&sControlSet[0] - handle);
+#ifndef KR_VERSION
 			DetourAttach(&(PVOID&)oSystemFunc_SetOutFrustumParticleSpawnRate, &hkSystemFunc_SetOutFrustumParticleSpawnRate);
-			EffectController = (FEngineControlSet*)(GetAddress((uintptr_t)&sControlSet[0] + 0x1E, 4, 8) - 0x24);
+#endif
+			EffectController = (FEngineControlSet*)(GetAddress((uintptr_t)&sControlSet[0] + 0x1E, 4, 8) - (COMPILER_CHANGED ? 0x2C : 0x24));
 		}
 		else
-			MessageBox(NULL, xorstr_(L"Failed to find video options"), xorstr_(L"[ExtendedOptions] Search Error"), MB_OK);
+			MessageBox(NULL, xorstr_(L"Failed to find video options"), xorstr_(L"Search Error"), MB_OK);
 
-		auto sExecCmd = std::search(data.begin(), data.end(), pattern_searcher(xorstr_("48 8B C3 0F 1F 44 00 00 48 FF C0 66 83 3C 41 00 75 ?? 48 85 C0  0F 84 1E 01 00 00")));
+		// OLD 48 8B C3 0F 1F 44 00 00 48 FF C0 66 83 3C 41 00 75 ?? 48 85 C0 0F 84 1E 01 00 00
+		auto sExecCmd = std::search(data.begin(), data.end(), pattern_searcher(xorstr_("48 8B C3 0F 1F 44 00 00 48 FF C0 66 83 3C 41 00 75 ?? 48 85 C0 0F 84 1E 01 00 00")));
+		if (sExecCmd == data.end())
+			sExecCmd = std::search(data.begin(), data.end(), pattern_searcher(xorstr_("48 89 74 24 ?? 48 8B F9 48 C7 C3 FF FF FF FF 48 8B C3 66 90")));
+
 		if (sExecCmd != data.end()) {
-			ExecuteConsoleCommandNoHistory = module->rva_to<std::remove_pointer_t<decltype(ExecuteConsoleCommandNoHistory)>>((uintptr_t)&sExecCmd[0] - 0x28 - handle);
+			ExecuteConsoleCommandNoHistory = module->rva_to<std::remove_pointer_t<decltype(ExecuteConsoleCommandNoHistory)>>((uintptr_t)&sExecCmd[0] - (COMPILER_CHANGED ? 0x1C : 0x28) - handle);
 		} else
 			MessageBox(NULL, xorstr_(L"Failed to find ExecConsoleCommand, auto execution of console_cmds will not work"), xorstr_(L"[ExtendedOptions] Search Error"), MB_OK);
 
-		auto sAddNotif = std::search(data.begin(), data.end(), pattern_searcher(xorstr_("45 33 DB 41 8D 42 ?? 3C 02 BB 05 00 00 00 41 0F 47 DB")));
-		if (sAddNotif != data.end()) {
-			AddInstantNotification = module->rva_to<std::remove_pointer_t<decltype(AddInstantNotification)>>((uintptr_t)&sAddNotif[0] - 0x68 - handle);
-		}
+		if (COMPILER_CHANGED) 
+			result = std::search(data.begin(), data.end(), pattern_searcher(xorstr_("33 FF 80 BC 24 80 00 00 00 01 75 05")));
+		else
+			result = std::search(data.begin(), data.end(), pattern_searcher(xorstr_("45 33 DB 41 8D 42 ?? 3C 02 BB 05 00 00 00 41 0F 47 DB")));
 
-		auto sPhantom = std::search(data.begin(), data.end(), pattern_searcher(xorstr_("48 8B CB 33 FF 48 85 DB 48 0F 44 CF 80 B9 ?? ?? 00 00 02")));
-		if (sPhantom != data.end()) {//BNSR.exe+4239B8D 
+		//auto sAddNotif = std::search(data.begin(), data.end(), pattern_searcher(xorstr_("45 33 DB 41 8D 42 ?? 3C 02 BB 05 00 00 00 41 0F 47 DB")));
+		if (result != data.end()) {
+			AddInstantNotification = module->rva_to<std::remove_pointer_t<decltype(AddInstantNotification)>>((uintptr_t)&result[0] - (COMPILER_CHANGED ? 0x13 : 0x68) - handle);
+		} else
+			MessageBox(NULL, xorstr_(L"Failed to find World:AddInstantNotification, chat notifications will be missing"), xorstr_(L"[ExtendedOptions] Search Error"), MB_OK);
 
-			oClearPhantomMode = module->rva_to<std::remove_pointer_t<decltype(oClearPhantomMode)>>(GetAddress((uintptr_t)&sPhantom[0] + 0x12B, 1, 5) - handle);
-			oStartPhantomWeaponMode = module->rva_to<std::remove_pointer_t<decltype(oStartPhantomWeaponMode)>>(GetAddress((uintptr_t)&sPhantom[0] + 0x3C, 1, 5) - handle);
-			oUpdatePhantomWeaponMode = module->rva_to<std::remove_pointer_t<decltype(oUpdatePhantomWeaponMode)>>((uintptr_t)&sPhantom[0] - 0xAD - handle);
+		// 48 8B C7 33 C9 48 85 FF 48 0F 44 C1 80 B8 ?? ?? 00 00 02
+#ifndef KR_VERSION
+		if (COMPILER_CHANGED)
+			result = std::search(data.begin(), data.end(), pattern_searcher(xorstr_("48 8B C7 33 C9 48 85 FF 48 0F 44 C1 80 B8 ?? ?? 00 00 02")));
+		else
+			result = std::search(data.begin(), data.end(), pattern_searcher(xorstr_("48 8B CB 33 FF 48 85 DB 48 0F 44 CF 80 B9 ?? ?? 00 00 02")));
+
+		if (result != data.end()) {
+			oClearPhantomMode = module->rva_to<std::remove_pointer_t<decltype(oClearPhantomMode)>>(GetAddress((uintptr_t)&result[0] + (COMPILER_CHANGED ? 0x65 : 0x12B), 1, 5) - handle);
+			oStartPhantomWeaponMode = module->rva_to<std::remove_pointer_t<decltype(oStartPhantomWeaponMode)>>(GetAddress((uintptr_t)&result[0] + (COMPILER_CHANGED ? 0x34 : 0x3C), 1, 5) - handle);
+			oUpdatePhantomWeaponMode = module->rva_to<std::remove_pointer_t<decltype(oUpdatePhantomWeaponMode)>>((uintptr_t)&result[0] - (COMPILER_CHANGED ? 0xA7 : 0xAD) - handle);
 			DetourAttach(&(PVOID&)oUpdatePhantomWeaponMode, &hkUpdatePhantomWeaponMode);
 			DetourAttach(&(PVOID&)oStartPhantomWeaponMode, &hkStartPhantomWeaponMode);
 		} else
 			MessageBox(NULL, xorstr_(L"Failed to hook PhantomWeapon Functions"), xorstr_(L"[ExtendedOptions] Search Error"), MB_OK);
+#endif
 
 		result = std::search(data.begin(), data.end(), pattern_searcher(xorstr_("48 83 3D ?? ?? ?? ?? 00 49 8B F1 49 8B F8 8B EA 48 8B D9")));
 		if (result != data.end()) {
@@ -539,19 +603,21 @@ bool __cdecl init([[maybe_unused]] const Version client_version)
 		else
 			MessageBox(NULL, xorstr_(L"Failed to find SignalInfo for Damage Font"), xorstr_(L"[ExtendedOptions] Search Error"), MB_OK);
 
-		result = std::search(data.begin(), data.end(), pattern_searcher(xorstr_("48 8B 51 ?? ?? ?? ?? 74 10 33 C0 48 85 C9 48 0F 45 C2")));
+		if(COMPILER_CHANGED)
+			result = std::search(data.begin(), data.end(), pattern_searcher(xorstr_("48 8B 05 ?? ?? ?? ?? 48 85 C0 74 10 48 8B ?? ?? 00 00 00 48 85 C9 0F 85 ?? ?? ?? ?? 33 C0 C3 CC 40 56 57 41 56 48 83 EC ??")));
+		else
+			result = std::search(data.begin(), data.end(), pattern_searcher(xorstr_("48 85 D2 74 ?? 33 C0 48 85 C9 48 0F 45 C2 48")));
 		if (result != data.end()) {
-			GetUiStateGame = module->rva_to<std::remove_pointer_t<decltype(GetUiStateGame)>>((uintptr_t)&result[0] - 0x18 - handle);
+			GetUiStateGame = module->rva_to<std::remove_pointer_t<decltype(GetUiStateGame)>>((uintptr_t)&result[0] - (COMPILER_CHANGED ? 0x00 : 0x1C) - handle);
 		}
 		else
 			MessageBox(NULL, xorstr_(L"Failed to find UiStateGame::Get()"), xorstr_(L"[ExtendedOptions] Search Error"), MB_OK);
 
+		// (.*?) \+ 848\) == 1\)
 		result = std::search(data.begin(), data.end(), pattern_searcher(xorstr_("45 33 ED 4C 8B 64 24 78 48 8B 8F ?? ?? ?? ?? 4C 8B 7C 24 60")));
 		if (result != data.end()) {
 			memcpy(&PassiveEffectList_Offset, &result[0] + 0xB, 4);
 		}
-		else
-			MessageBox(NULL, xorstr_(L"Failed to find PassiveEffectList Offset"), xorstr_(L"[ExtendedOptions] Search Error"), MB_OK);
 
 		result = std::search(data.begin(), data.end(), pattern_searcher(xorstr_("66 89 54 24 10 48 89 4C 24 08 57 48 81 EC 10 02 00 00 48 C7 84 24 B8 00 00 00 FE FF FF FF")));
 		if (result != data.end()) {
@@ -559,6 +625,13 @@ bool __cdecl init([[maybe_unused]] const Version client_version)
 		}
 		else 
 			MessageBox(NULL, xorstr_(L"Failed to find BNSClient::GetWorld"), xorstr_(L"[ExtendedOptions] Search Error"), MB_OK);
+
+		result = std::search(data.begin(), data.end(), pattern_searcher(xorstr_("CC 48 8B 81 ?? ?? ?? ?? 48 85 C0 74 07 C6 80 6B EB")));
+		if (result != data.end()) {
+			memcpy(&PassiveEffectList_Offset, &result[0] + 0x4, 4);
+			oAFunction = module->rva_to<std::remove_pointer_t<decltype(oAFunction)>>((uintptr_t)&result[0] + 0x1 - handle);
+			DetourAttach(&(PVOID&)oAFunction, &hkAFunction);
+		}
 
 		auto key = (CfgDoc.select_node(xorstr_("/config/options/option[@name='reloadKey']")).node().attribute(xorstr_("keyCode")).as_string(xorstr_("39"))); // Default is 6 key
 		ReloadInput.Key = GetKeyCodeFromString(key);
@@ -596,7 +669,15 @@ bool __cdecl init([[maybe_unused]] const Version client_version)
 		Profile_5.bCtrlPressed = (CfgDoc.select_node(xorstr_("/config/options/option[@name='profile_5']")).node().attribute(xorstr_("bCtrl")).as_bool(true));
 		Profile_5.bShiftPressed = (CfgDoc.select_node(xorstr_("/config/options/option[@name='profile_5']")).node().attribute(xorstr_("bShift")).as_bool());
 
+#ifndef KR_VERSION
 		DetourTransactionCommit();
+#endif
+
+#ifdef KR_VERSION
+		static PVOID cookie;
+		if (tLdrRegisterDllNotification LdrRegisterDllNotification = reinterpret_cast<tLdrRegisterDllNotification>(GetProcAddress(GetModuleHandleA("ntdll.dll"), "LdrRegisterDllNotification")))
+			LdrRegisterDllNotification(0, DllNotification, NULL, &cookie); //Set a callback for when Dll's are loaded/unloaded
+#endif
     }
     return true;
 }
